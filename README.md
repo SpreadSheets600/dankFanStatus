@@ -20,7 +20,7 @@ Plugin settings:
 
 - `/home/spreadsheets600/.config/DankMaterialShell/plugin_settings.json`
 
-## What It Does
+## What It DoeS
 
 - Runs a root daemon to read fan speed from EC/debugfs.
 - Writes widget data to `/run/dank-fan-stats/stats.json`.
@@ -45,3 +45,8 @@ cat /run/dank-fan-stats/stats.json
 
 Restart Dank Material Shell or Quickshell after plugin changes so the widget reloads.
 
+
+## Resources
+
+MSI EC - https://github.com/BeardOverflow/msi-ec
+DankMaterialShell - https://github.com/AvengeMedia/DankMaterialShelL
