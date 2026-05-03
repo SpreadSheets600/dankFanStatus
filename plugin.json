@@ -1,0 +1,13 @@
+{
+  "id": "dankFanStats",
+  "name": "Dank Fan Stats",
+  "description": "Display Fan Speed And Control Control Cooler Boost",
+  "version": "0.1.0",
+  "author": "SpreadSheets600",
+  "icon": "mode_fan",
+  "type": "widget",
+  "capabilities": ["dankbar-widget", "monitoring"],
+  "component": "./DankFanStats.qml",
+  "settings": "./DankFanStatsSettings.qml",
+  "permissions": ["settings_read", "settings_write", "process"]
+}
