@@ -1,8 +1,8 @@
 {
   "id": "dankFanStats",
   "name": "Dank Fan Stats",
-  "description": "Display Fan Speed And Control Control Cooler Boost",
-  "version": "0.1.0",
+  "description": "Fan RPM and temperature plus full MSI EC control in a tabbed menu: Stats, Settings, a draggable advanced fan-curve editor, and Keyboard (backlight + Fn/Win swap).",
+  "version": "0.4.0",
   "author": "SpreadSheets600",
   "icon": "mode_fan",
   "type": "widget",

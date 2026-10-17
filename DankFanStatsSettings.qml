@@ -17,7 +17,7 @@ PluginSettings {
 
     StyledText {
         width: parent.width
-        text: "Shows fan RPM plus CPU and GPU temperatures on the Dank bar from a root-managed JSON cache file."
+        text: "Shows fan RPM plus CPU and GPU temperatures on the Dank bar and, on click, opens a tabbed MSI EC control menu (Stats, Settings, fan Curve editor and Keyboard). Data comes from a root-managed JSON cache file."
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
         wrapMode: Text.WordWrap
@@ -34,7 +34,7 @@ PluginSettings {
     StringSetting {
         settingKey: "controlPath"
         label: "Control FIFO Path"
-        description: "Writable FIFO used to send cooler boost toggle commands to the privileged daemon."
+        description: "Writable FIFO used to send fan and MSI EC control commands to the privileged daemon."
         placeholder: "/run/dank-fan-stats/control"
         defaultValue: "/run/dank-fan-stats/control"
     }
@@ -42,7 +42,7 @@ PluginSettings {
     StringSetting {
         settingKey: "updateInterval"
         label: "Refresh Interval (ms)"
-        description: "How often the widget polls the JSON cache file. This does not change the systemd timer cadence."
+        description: "How often the widget polls the JSON cache file."
         placeholder: "3000"
         defaultValue: "3000"
     }
