@@ -1,10 +1,12 @@
 [Unit]
-Description=Serve fan stats and cooler boost control for Dank Material Shell
+Description=Serve MSI EC fan stats and control for Dank Material Shell
 After=local-fs.target
-ConditionPathExists=/sys/kernel/debug/ec/ec0/io
+ConditionPathExists=/sys/devices/platform/msi-ec
 
 [Service]
 Type=simple
+Environment=CLIENT_USER=@CLIENT_USER@
+Environment=CLIENT_GROUP=@CLIENT_GROUP@
 ExecStart=/usr/local/bin/dank-fan-stats-daemon
 Restart=always
 RestartSec=2
