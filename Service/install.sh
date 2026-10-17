@@ -10,8 +10,8 @@ TARGET_GROUP="$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")"
 install -D -m 0755 "$BASE_DIR/dank-fan-stats-daemon.sh" /usr/local/bin/dank-fan-stats-daemon
 
 sed -e "s/@CLIENT_USER@/${TARGET_USER}/g" \
-    -e "s/@CLIENT_GROUP@/${TARGET_GROUP}/g" \
-    "$BASE_DIR/dank-fan-stats.service" > /etc/systemd/system/dank-fan-stats.service
+	-e "s/@CLIENT_GROUP@/${TARGET_GROUP}/g" \
+	"$BASE_DIR/dank-fan-stats.service" >/etc/systemd/system/dank-fan-stats.service
 chmod 0644 /etc/systemd/system/dank-fan-stats.service
 
 # Read-only EC access (/sys/kernel/debug/ec/ec0/io) for real fan RPM.

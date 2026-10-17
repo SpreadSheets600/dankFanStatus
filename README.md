@@ -6,12 +6,15 @@ menu to drive every writable MSI EC option.
 
 ## Screenshots
 
-| Tab | Preview |
-| :--- | :--- |
-| **Stats** - live telemetry and a system summary | ![Stats tab](docs/screenshots/stats.png) |
-| **Settings** - performance / fan modes, toggles, battery charge limit | ![Settings tab](docs/screenshots/settings.png) |
-| **Curve** - draggable advanced fan curve with presets | ![Curve tab](docs/screenshots/curve.png) |
-| **Keyboard** - backlight level and Fn / Windows key swap | ![Keyboard tab](docs/screenshots/keyboard.png) |
+| Stats | Settings |
+| :---: | :---: |
+| ![Stats tab](docs/screenshots/stats.png) | ![Settings tab](docs/screenshots/settings.png) |
+| **Live telemetry and a system summary** | **Performance / fan modes, toggles, and battery charge limit** |
+
+| Curve | Keyboard |
+| :---: | :---: |
+| ![Curve tab](docs/screenshots/curve.png) | ![Keyboard tab](docs/screenshots/keyboard.png) |
+| **Draggable advanced fan curve with presets** | **Backlight level and Fn / Windows key swap** |
 
 ## What it does
 
