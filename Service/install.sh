@@ -21,6 +21,9 @@ install -D -m 0644 "$BASE_DIR/ec_sys.conf" /etc/modules-load.d/ec_sys.conf
 # method MControlCenter uses). The debugfs node stays root-only.
 install -D -m 0644 "$BASE_DIR/ec_sys-write.conf" /etc/modprobe.d/ec_sys.conf
 
+# Persisted settings (replayed by the daemon at every start).
+install -d -m 0755 /var/lib/dank-fan-stats
+
 # (Re)load ec_sys with the new parameters.
 modprobe -r ec_sys 2>/dev/null || true
 modprobe ec_sys 2>/dev/null || true

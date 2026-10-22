@@ -42,6 +42,8 @@ menu to drive every writable MSI EC option.
 - The keyboard backlight is a standard kernel LED class device, so it is set by
   writing `brightness` - no raw EC access needed.
 - Right-click the pill to quick-toggle Cooler Boost.
+- Settings survive a reboot: the daemon remembers what it applied and replays it
+  on start (the MSI EC resets itself on power loss).
 - The **Curve** tab has a draggable **fan-curve editor** that programs the
   MSI EC advanced curve (seven fan levels, six temperature thresholds) for CPU
   and GPU, with Silent / Balanced / Performance presets.
@@ -88,6 +90,27 @@ The installer:
 2. Installs and enables `dank-fan-stats.service` (client user auto-detected).
 3. Loads `ec_sys` for fan RPM and enables `write_support=1` so the advanced fan curve can be programmed.
 4. Reloads `ec_sys` so the new parameter takes effect.
+
+## Settings persistence
+
+The MSI EC forgets every setting on power loss, which is why modes used to be
+lost after a reboot. The daemon now keeps the settings it applies in
+`/var/lib/dank-fan-stats/settings.conf` and replays them once at startup, before
+the first stats refresh:
+
+- performance (`shift_mode`) and fan mode (`fan_mode`, including `advanced`)
+- Cooler Boost and Super Battery
+- webcam and webcam block
+- Fn / Windows key positions
+- battery charge start / end thresholds
+- keyboard backlight level
+- the advanced fan curve (restored before `advanced` is re-selected)
+
+Values are read back from the kernel after each successful write, so the file
+holds the final state (a `toggle` is stored as `on`/`off`) in the driver's own
+spelling. On replay every value is validated again - a mode that is no longer in
+`available_*`, an out-of-range threshold or an invalid curve is skipped instead
+of being written. Delete the file to fall back to the firmware defaults.
 
 ## Check
 

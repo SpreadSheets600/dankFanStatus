@@ -2,7 +2,7 @@
   "id": "dankFanStats",
   "name": "Dank Fan Stats",
   "description": "Fan RPM and temperature plus full MSI EC control in a tabbed menu: Stats, Settings, a draggable advanced fan-curve editor, and Keyboard (backlight + Fn/Win swap).",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": "SpreadSheets600",
   "icon": "mode_fan",
   "type": "widget",

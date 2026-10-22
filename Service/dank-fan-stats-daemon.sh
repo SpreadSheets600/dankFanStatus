@@ -13,6 +13,11 @@ CLIENT_GROUP="${CLIENT_GROUP:-$(id -gn "$CLIENT_USER" 2>/dev/null || echo root)}
 EC_DIR="/sys/devices/platform/msi-ec"
 EC_DEBUG_IO="/sys/kernel/debug/ec/ec0/io"
 
+# The MSI EC forgets everything on power loss, so the daemon keeps a copy of the
+# settings it has applied and replays them once at startup.
+STATE_DIR="/var/lib/dank-fan-stats"
+STATE_FILE="$STATE_DIR/settings.conf"
+
 # MSI "advanced" fan curve lives in raw EC memory (no sysfs interface), the same
 # layout MControlCenter uses. Reading works with ec_sys read-only; writing needs
 # ec_sys write_support=1 (see /etc/modprobe.d/ec_sys.conf).
@@ -189,12 +194,12 @@ write_ec_range() {
 apply_fan_curve() {
 	local cpu_temps=$1 cpu_speeds=$2 gpu_temps=$3 gpu_speeds=$4
 
-	valid_curve_list "$cpu_temps" "$CURVE_CPU_TEMP_N" temp || return 0
-	valid_curve_list "$cpu_speeds" "$CURVE_CPU_SPEED_N" speed || return 0
-	valid_curve_list "$gpu_temps" "$CURVE_GPU_TEMP_N" temp || return 0
-	valid_curve_list "$gpu_speeds" "$CURVE_GPU_SPEED_N" speed || return 0
+	valid_curve_list "$cpu_temps" "$CURVE_CPU_TEMP_N" temp || return 1
+	valid_curve_list "$cpu_speeds" "$CURVE_CPU_SPEED_N" speed || return 1
+	valid_curve_list "$gpu_temps" "$CURVE_GPU_TEMP_N" temp || return 1
+	valid_curve_list "$gpu_speeds" "$CURVE_GPU_SPEED_N" speed || return 1
 
-	[[ -w "$EC_DEBUG_IO" ]] || return 0
+	[[ -w "$EC_DEBUG_IO" ]] || return 1
 
 	local -a ct cs gt gs
 	IFS=',' read -r -a ct <<<"$cpu_temps"
@@ -303,6 +308,90 @@ set_kbd_backlight() {
 	printf '%s\n' "$value" >"$KBD_LED" 2>/dev/null || true
 }
 
+# --- persisted settings -------------------------------------------------------
+# Every write below doubles as a "remember this" call. The stored value is read
+# back from the kernel rather than taken from the request, so toggles resolve to
+# their final on/off state and the driver's canonical spelling is what survives.
+
+save_setting() {
+	local key=$1
+	shift
+	local value="$*" tmp="$STATE_FILE.tmp"
+
+	mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+	: >>"$STATE_FILE" 2>/dev/null || return 0
+
+	if [[ -r "$STATE_FILE" ]]; then
+		grep -v "^${key}=" "$STATE_FILE" >"$tmp" 2>/dev/null || true
+	fi
+
+	[[ -e "$tmp" ]] || : >"$tmp"
+	printf '%s=%s\n' "$key" "$value" >>"$tmp" || return 0
+
+	chmod 0644 "$tmp" 2>/dev/null || true
+	mv "$tmp" "$STATE_FILE" 2>/dev/null || true
+}
+
+persist_attr() {
+	local key=$1 path=$2 value
+
+	[[ -w "$path" ]] || return 0
+	value=$(read_attr "$path" "")
+	[[ -n "$value" ]] || return 0
+
+	save_setting "$key" "$value"
+}
+
+apply_setting() {
+	local key=$1 value=$2
+
+	case "$key" in
+	cooler_boost | super_battery | webcam | webcam_block)
+		set_bool_attr "$EC_DIR/$key" "$value"
+		;;
+	shift_mode)
+		valid_choice "$value" "$EC_DIR/available_shift_modes" && set_attr "$EC_DIR/shift_mode" "$value"
+		;;
+	fan_mode)
+		valid_choice "$value" "$EC_DIR/available_fan_modes" && set_attr "$EC_DIR/fan_mode" "$value"
+		;;
+	fn_key | win_key)
+		case "${value,,}" in
+		left | right) set_attr "$EC_DIR/$key" "${value,,}" ;;
+		esac
+		;;
+	charge_start | charge_end)
+		set_charge "$key" "$value"
+		;;
+	kbd_backlight)
+		set_kbd_backlight "$value"
+		;;
+	fan_curve)
+		local cpu_temps cpu_speeds gpu_temps gpu_speeds
+		read -r cpu_temps cpu_speeds gpu_temps gpu_speeds <<<"$value" || true
+		apply_fan_curve "${cpu_temps:-}" "${cpu_speeds:-}" "${gpu_temps:-}" "${gpu_speeds:-}"
+		;;
+	esac
+}
+
+apply_saved_settings() {
+	local key value
+
+	[[ -r "$STATE_FILE" ]] || return 0
+
+	# Curves first: selecting the "advanced" fan mode is only useful once the
+	# table it reads has been restored.
+	while IFS='=' read -r key value; do
+		[[ "$key" == "fan_curve" ]] || continue
+		apply_setting "$key" "$value" || true
+	done <"$STATE_FILE"
+
+	while IFS='=' read -r key value; do
+		[[ -z "$key" || "$key" == \#* || "$key" == "fan_curve" ]] && continue
+		apply_setting "$key" "$value" || true
+	done <"$STATE_FILE"
+}
+
 # --- json output --------------------------------------------------------------
 write_json() {
 	local error ok
@@ -371,46 +460,73 @@ handle_command() {
 	toggle)
 		# legacy "toggle" -> cooler boost
 		case "${key,,}" in
-		"" | cooler_boost) set_bool_attr "$EC_DIR/cooler_boost" toggle ;;
-		super_battery) set_bool_attr "$EC_DIR/super_battery" toggle ;;
-		webcam) set_bool_attr "$EC_DIR/webcam" toggle ;;
-		webcam_block) set_bool_attr "$EC_DIR/webcam_block" toggle ;;
+		"" | cooler_boost)
+			set_bool_attr "$EC_DIR/cooler_boost" toggle
+			persist_attr cooler_boost "$EC_DIR/cooler_boost"
+			;;
+		super_battery)
+			set_bool_attr "$EC_DIR/super_battery" toggle
+			persist_attr super_battery "$EC_DIR/super_battery"
+			;;
+		webcam)
+			set_bool_attr "$EC_DIR/webcam" toggle
+			persist_attr webcam "$EC_DIR/webcam"
+			;;
+		webcam_block)
+			set_bool_attr "$EC_DIR/webcam_block" toggle
+			persist_attr webcam_block "$EC_DIR/webcam_block"
+			;;
 		esac
 		;;
 	set)
 		case "${key,,}" in
 		cooler_boost | super_battery | webcam | webcam_block)
 			set_bool_attr "$EC_DIR/${key,,}" "$value"
+			persist_attr "${key,,}" "$EC_DIR/${key,,}"
 			;;
 		shift_mode)
-			valid_choice "$value" "$EC_DIR/available_shift_modes" && set_attr "$EC_DIR/shift_mode" "$value"
+			valid_choice "$value" "$EC_DIR/available_shift_modes" &&
+				set_attr "$EC_DIR/shift_mode" "$value" &&
+				persist_attr shift_mode "$EC_DIR/shift_mode"
 			;;
 		fan_mode)
-			valid_choice "$value" "$EC_DIR/available_fan_modes" && set_attr "$EC_DIR/fan_mode" "$value"
+			valid_choice "$value" "$EC_DIR/available_fan_modes" &&
+				set_attr "$EC_DIR/fan_mode" "$value" &&
+				persist_attr fan_mode "$EC_DIR/fan_mode"
 			;;
 		fan_curve)
-			apply_fan_curve "${parts[2]:-}" "${parts[3]:-}" "${parts[4]:-}" "${parts[5]:-}"
+			if apply_fan_curve "${parts[2]:-}" "${parts[3]:-}" "${parts[4]:-}" "${parts[5]:-}"; then
+				save_setting fan_curve "${parts[2]:-} ${parts[3]:-} ${parts[4]:-} ${parts[5]:-}"
+			fi
 			;;
 		advanced)
 			case "${value,,}" in
 			on | true | 1)
-				valid_choice advanced "$EC_DIR/available_fan_modes" && set_attr "$EC_DIR/fan_mode" advanced
+				valid_choice advanced "$EC_DIR/available_fan_modes" &&
+					set_attr "$EC_DIR/fan_mode" advanced &&
+					persist_attr fan_mode "$EC_DIR/fan_mode"
 				;;
 			off | false | 0)
 				set_attr "$EC_DIR/fan_mode" auto
+				persist_attr fan_mode "$EC_DIR/fan_mode"
 				;;
 			esac
 			;;
 		fn_key | win_key)
 			case "${value,,}" in
-			left | right) set_attr "$EC_DIR/${key,,}" "${value,,}" ;;
+			left | right)
+				set_attr "$EC_DIR/${key,,}" "${value,,}"
+				persist_attr "${key,,}" "$EC_DIR/${key,,}"
+				;;
 			esac
 			;;
 		charge_start | charge_end)
 			set_charge "${key,,}" "$value"
+			persist_attr "${key,,}" "$BAT_DIR/charge_control_${key#charge_}_threshold"
 			;;
 		kbd_backlight | backlight | keyboard_backlight)
 			set_kbd_backlight "$value"
+			persist_attr kbd_backlight "${KBD_LED:-/nonexistent}"
 			;;
 		esac
 		;;
@@ -419,6 +535,9 @@ handle_command() {
 	refresh_stats
 }
 
+# Re-apply what the user had configured before the last power-off, then start
+# serving fresh values.
+apply_saved_settings
 refresh_stats
 
 while true; do
