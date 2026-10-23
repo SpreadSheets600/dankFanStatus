@@ -1,22 +1,26 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
-
 import qs.Common
-import qs.Widgets
+import qs.DCommon.Widgets
 import qs.Modules.Plugins
 
 PluginComponent {
     id: root
 
-    // --- settings (persisted through pluginData) ---
+    layerNamespacePlugin: "dank-fan-stats"
+
     property string statsPath: pluginData.statsPath || "/run/dank-fan-stats/stats.json"
     property string controlPath: pluginData.controlPath || "/run/dank-fan-stats/control"
-    property int updateInterval: parseInt(pluginData.updateInterval) || 3000
+    readonly property int updateInterval: {
+        const parsed = parseInt(pluginData.updateInterval);
+        if (isNaN(parsed))
+            return 3000;
+        return Math.max(1000, Math.min(10000, parsed));
+    }
+    readonly property string pillMode: pluginData.pillMode || "rpm"
+    readonly property bool showPillIcon: pluginData.showPillIcon !== false
 
-    property color boostColor: "#FF9800"
-
-    // --- live state ---
     property bool statsAvailable: false
     property string errorText: ""
     property int fanRpm: 0
@@ -41,102 +45,222 @@ PluginComponent {
     property int kbdBacklight: 0
     property int kbdBacklightMax: 0
 
-    // --- popout tab + fan curve state ---
+    property bool coolerBoostSupported: true
+    property bool superBatterySupported: true
+    property bool webcamSupported: true
+    property bool webcamBlockSupported: true
+    property bool fnKeySupported: true
+    property bool winKeySupported: true
+    property bool advancedSupported: true
+    property bool curveWritable: true
+    property bool chargeSupported: true
+    property bool kbdBacklightSupported: true
+
     property int tabIndex: 0
     property var curveCpuTemps: [50, 60, 65, 70, 75, 80]
     property var curveCpuSpeeds: [0, 40, 50, 60, 70, 80, 85]
     property var curveGpuTemps: [50, 60, 65, 70, 75, 80]
     property var curveGpuSpeeds: [0, 40, 50, 60, 70, 80, 85]
-    property int curveTarget: 0 // 0 = CPU, 1 = GPU
+    property int curveTarget: 0
     property bool curveDirty: false
 
     readonly property bool advancedOn: root.fanMode === "advanced"
     readonly property bool boostOn: root.coolerBoost === "on"
+    readonly property bool curveReady: root.advancedSupported && root.curveWritable
+    readonly property bool functionKeysSupported: root.fnKeySupported || root.winKeySupported
     readonly property var kbdLabels: {
-        const n = root.kbdBacklightMax;
-        if (n <= 0)
+        const maximum = root.kbdBacklightMax;
+        if (maximum <= 0)
             return [];
-        if (n === 3)
-            return ["Off", "Low", "Medium", "High"];
-        const out = ["Off"];
-        for (let i = 1; i <= n; i++)
-            out.push(String(i));
-        return out;
+        if (maximum === 3)
+            return [I18n.trFor("dankFanStats", "Off"), I18n.trFor("dankFanStats", "Low"), I18n.trFor("dankFanStats", "Medium"), I18n.trFor("dankFanStats", "High")];
+        const labels = [I18n.trFor("dankFanStats", "Off")];
+        for (let value = 1; value <= maximum; value++)
+            labels.push(String(value));
+        return labels;
     }
-    readonly property var curveTemps: curveTarget === 0 ? curveCpuTemps : curveGpuTemps
-    readonly property var curveSpeeds: curveTarget === 0 ? curveCpuSpeeds : curveGpuSpeeds
+    readonly property var curveTemps: root.curveTarget === 0 ? root.curveCpuTemps : root.curveGpuTemps
+    readonly property var curveSpeeds: root.curveTarget === 0 ? root.curveCpuSpeeds : root.curveGpuSpeeds
 
-    // Small selectable chip used by the curve and keyboard tabs. Gives its label
-    // generous width so it renders cleanly with any font metrics.
-    component Chip: StyledRect {
-        id: chip
-
-        property string label: ""
-        property bool selected: false
-        signal activated
-
-        implicitWidth: chipLabel.implicitWidth + Theme.spacingM * 2
-        implicitHeight: 30
-        radius: Theme.cornerRadius
-        color: chip.selected ? Theme.primary : "transparent"
-        border.width: chip.selected ? 0 : 1
-        border.color: Theme.outline
-
-        StyledText {
-            id: chipLabel
-            anchors.centerIn: parent
-            text: chip.label
-            font.pixelSize: Theme.fontSizeSmall
-            color: chip.selected ? Theme.primaryText : Theme.surfaceText
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: chip.activated()
-        }
-    }
-
-    // compact telemetry: three columns
     readonly property var telemetry: [
         {
-            "label": "CPU",
-            "value": root.cpuTemp + "°C",
-            "sub": root.cpuFan + "% fan"
+            "label": I18n.trFor("dankFanStats", "CPU"),
+            "value": root.tempText(root.cpuTemp),
+            "sub": root.fanPercentText(root.cpuFan),
+            "icon": "memory",
+            "accent": Theme.primary,
+            "valueColor": root.tempColor(root.cpuTemp)
         },
         {
-            "label": "GPU",
-            "value": root.gpuTemp + "°C",
-            "sub": root.gpuFan + "% fan"
+            "label": I18n.trFor("dankFanStats", "GPU"),
+            "value": root.tempText(root.gpuTemp),
+            "sub": root.fanPercentText(root.gpuFan),
+            "icon": "developer_board",
+            "accent": Theme.tertiary,
+            "valueColor": root.tempColor(root.gpuTemp)
         },
         {
-            "label": "FAN",
-            "value": root.fanRpm >= 1000 ? (root.fanRpm / 1000).toFixed(1) + "k" : (root.fanRpm > 0 ? String(root.fanRpm) : "--"),
-            "sub": "RPM"
+            "label": I18n.trFor("dankFanStats", "FAN"),
+            "value": root.rpmText(root.fanRpm),
+            "sub": I18n.trFor("dankFanStats", "RPM"),
+            "icon": "mode_fan",
+            "accent": Theme.secondary,
+            "valueColor": Theme.surfaceText
         }
     ]
 
-    readonly property var toggleItems: [
-        {
-            "key": "cooler_boost",
-            "label": "Cooler Boost"
-        },
-        {
-            "key": "super_battery",
-            "label": "Super Battery"
-        },
-        {
-            "key": "webcam",
-            "label": "Camera"
-        },
-        {
-            "key": "webcam_block",
-            "label": "Block Camera"
-        }
-    ]
+    readonly property var toggleItems: {
+        const items = [];
+        if (root.coolerBoostSupported)
+            items.push({
+                "key": "cooler_boost",
+                "label": I18n.trFor("dankFanStats", "Cooler Boost"),
+                "description": I18n.trFor("dankFanStats", "Fans at maximum speed")
+            });
+        if (root.superBatterySupported)
+            items.push({
+                "key": "super_battery",
+                "label": I18n.trFor("dankFanStats", "Super Battery"),
+                "description": I18n.trFor("dankFanStats", "Reduce power draw")
+            });
+        if (root.webcamSupported)
+            items.push({
+                "key": "webcam",
+                "label": I18n.trFor("dankFanStats", "Camera"),
+                "description": I18n.trFor("dankFanStats", "Enable or disable the webcam")
+            });
+        if (root.webcamBlockSupported)
+            items.push({
+                "key": "webcam_block",
+                "label": I18n.trFor("dankFanStats", "Block Camera"),
+                "description": I18n.trFor("dankFanStats", "Hardware camera privacy switch")
+            });
+        return items;
+    }
 
-    function statColor() {
-        return root.boostOn ? root.boostColor : Theme.surfaceText;
+    readonly property string pillText: {
+        if (!root.statsAvailable)
+            return "--";
+        switch (root.pillMode) {
+        case "cpu":
+            return root.tempShort(root.cpuTemp);
+        case "gpu":
+            return root.tempShort(root.gpuTemp);
+        case "cpuRpm":
+            return root.tempShort(root.cpuTemp) + " " + root.rpmText(root.fanRpm);
+        default:
+            return root.rpmText(root.fanRpm);
+        }
+    }
+
+    readonly property color pillTextColor: {
+        if (!root.statsAvailable)
+            return Theme.surfaceVariantText;
+        if (root.boostOn)
+            return Theme.warning;
+        if (root.pillMode === "cpu" || root.pillMode === "cpuRpm") {
+            if (root.cpuTemp >= 90)
+                return Theme.tempDanger;
+            if (root.cpuTemp >= 75)
+                return Theme.tempWarning;
+        }
+        if (root.pillMode === "gpu") {
+            if (root.gpuTemp >= 90)
+                return Theme.tempDanger;
+            if (root.gpuTemp >= 75)
+                return Theme.tempWarning;
+        }
+        return Theme.widgetTextColor;
+    }
+
+    readonly property color pillIconColor: {
+        if (!root.statsAvailable)
+            return Theme.widgetInactiveIconColor;
+        if (root.boostOn)
+            return Theme.warning;
+        return Theme.widgetIconColor;
+    }
+
+    component SectionTitle: StyledText {
+        font.pixelSize: Theme.fontSizeSmall
+        font.weight: Theme.fontWeightMedium
+        color: Theme.primary
+    }
+
+    component Divider: Rectangle {
+        width: parent ? parent.width : 0
+        height: 1
+        color: Theme.outlineVariant
+        opacity: 0.55
+    }
+
+    component InfoRow: Item {
+        property string label: ""
+        property string value: ""
+        property color valueColor: Theme.surfaceText
+
+        width: parent ? parent.width : 0
+        height: Math.max(24, labelText.implicitHeight, valueText.implicitHeight)
+
+        StyledText {
+            id: labelText
+            anchors.left: parent.left
+            anchors.right: valueText.left
+            anchors.rightMargin: Theme.spacingM
+            anchors.verticalCenter: parent.verticalCenter
+            text: parent.label
+            elide: Text.ElideRight
+            color: Theme.surfaceVariantText
+            font.pixelSize: Theme.fontSizeMedium
+        }
+
+        StyledText {
+            id: valueText
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: parent.value
+            color: parent.valueColor
+            font.pixelSize: Theme.fontSizeMedium
+            font.weight: Theme.fontWeightMedium
+        }
+    }
+
+    function intValue(value, fallback) {
+        const parsed = parseInt(value);
+        return isNaN(parsed) ? fallback : parsed;
+    }
+
+    function tempText(value) {
+        return root.statsAvailable && value > 0 ? value + "°C" : "--";
+    }
+
+    function tempShort(value) {
+        return root.statsAvailable && value > 0 ? value + "°" : "--";
+    }
+
+    function fanPercentText(value) {
+        return root.statsAvailable && value > 0 ? value + "% " + I18n.trFor("dankFanStats", "fan") : I18n.trFor("dankFanStats", "fan --");
+    }
+
+    function rpmText(value) {
+        if (!root.statsAvailable)
+            return "--";
+        const rpm = Math.max(0, root.intValue(value, 0));
+        if (rpm <= 0)
+            return "0";
+        if (rpm >= 1000)
+            return (rpm / 1000).toFixed(1) + "k";
+        return String(rpm);
+    }
+
+    function tempColor(value) {
+        if (!root.statsAvailable || value <= 0)
+            return Theme.surfaceVariantText;
+        if (value >= 90)
+            return Theme.tempDanger;
+        if (value >= 75)
+            return Theme.tempWarning;
+        return Theme.surfaceText;
     }
 
     function toggleState(key) {
@@ -153,72 +277,139 @@ PluginComponent {
         return false;
     }
 
+    function validCurve(temps, speeds) {
+        if (!Array.isArray(temps) || !Array.isArray(speeds))
+            return false;
+        if (temps.length !== 6 || speeds.length !== 7)
+            return false;
+        for (let index = 0; index < temps.length; index++) {
+            const temp = Number(temps[index]);
+            if (!(temp > 0 && temp <= 100))
+                return false;
+            if (index > 0 && temp <= Number(temps[index - 1]))
+                return false;
+        }
+        for (let index = 0; index < speeds.length; index++) {
+            const speed = Number(speeds[index]);
+            if (!(speed >= 0 && speed <= 100))
+                return false;
+            if (index > 0 && speed < Number(speeds[index - 1]))
+                return false;
+        }
+        return true;
+    }
+
     function parseOutput(output) {
         const cleaned = output.trim();
 
         if (cleaned.length === 0) {
             root.statsAvailable = false;
-            root.errorText = "No stats file content yet";
+            root.errorText = I18n.trFor("dankFanStats", "No stats file content yet");
             return;
         }
 
         let data = null;
         try {
             data = JSON.parse(cleaned);
-        } catch (e) {
+        } catch (error) {
             root.statsAvailable = false;
-            root.errorText = "Stats JSON parse failed";
+            root.errorText = I18n.trFor("dankFanStats", "Could not parse the stats JSON");
             return;
         }
 
-        root.statsAvailable = !!data.ok;
-        root.errorText = data.ok ? "" : (data.error || "Stats service reported an error");
+        if (!data || typeof data !== "object") {
+            root.statsAvailable = false;
+            root.errorText = I18n.trFor("dankFanStats", "The stats file is empty");
+            return;
+        }
 
-        root.fanRpm = parseInt(data.fanRpm) || 0;
-        root.cpuTemp = parseInt(data.cpuTemp) || 0;
-        root.gpuTemp = parseInt(data.gpuTemp) || 0;
-        root.cpuFan = parseInt(data.cpuFan) || 0;
-        root.gpuFan = parseInt(data.gpuFan) || 0;
+        root.statsAvailable = data.ok === true;
+        root.errorText = data.ok === true ? "" : (data.error || I18n.trFor("dankFanStats", "The fan service reported an error"));
+
+        root.fanRpm = root.intValue(data.fanRpm, 0);
+        root.cpuTemp = root.intValue(data.cpuTemp, 0);
+        root.gpuTemp = root.intValue(data.gpuTemp, 0);
+        root.cpuFan = root.intValue(data.cpuFan, 0);
+        root.gpuFan = root.intValue(data.gpuFan, 0);
         root.fwVersion = data.fwVersion || "";
 
         root.coolerBoost = (data.coolerBoost || "off").toString().toLowerCase();
         root.superBattery = (data.superBattery || "off").toString().toLowerCase();
         root.webcam = (data.webcam || "").toString().toLowerCase();
         root.webcamBlock = (data.webcamBlock || "").toString().toLowerCase();
-        root.shiftModes = data.shiftModes || [];
-        root.fanModes = data.fanModes || [];
+        root.shiftModes = Array.isArray(data.shiftModes) ? data.shiftModes : [];
+        root.fanModes = Array.isArray(data.fanModes) ? data.fanModes : [];
         if (data.shiftMode !== undefined)
             root.shiftMode = (data.shiftMode || "").toString();
         if (data.fanMode !== undefined)
             root.fanMode = (data.fanMode || "").toString();
         root.fnKey = (data.fnKey || "").toString().toLowerCase();
         root.winKey = (data.winKey || "").toString().toLowerCase();
-        root.chargeStart = parseInt(data.chargeStart) || 0;
-        root.chargeEnd = parseInt(data.chargeEnd) || 100;
-        root.kbdBacklight = parseInt(data.kbdBacklight) || 0;
-        root.kbdBacklightMax = parseInt(data.kbdBacklightMax) || 0;
+        root.chargeStart = root.intValue(data.chargeStart, 0);
+        root.chargeEnd = root.intValue(data.chargeEnd, 100);
+        root.kbdBacklight = root.intValue(data.kbdBacklight, 0);
+        root.kbdBacklightMax = root.intValue(data.kbdBacklightMax, 0);
 
-        // Mirror the EC curve unless the user is mid-edit.
-        const c = data.curve;
-        if (c && !root.curveDirty) {
-            if (Array.isArray(c.cpuTemps) && c.cpuTemps.length === 6)
-                root.curveCpuTemps = c.cpuTemps.map(Number);
-            if (Array.isArray(c.cpuSpeeds) && c.cpuSpeeds.length === 7)
-                root.curveCpuSpeeds = c.cpuSpeeds.map(Number);
-            if (Array.isArray(c.gpuTemps) && c.gpuTemps.length === 6)
-                root.curveGpuTemps = c.gpuTemps.map(Number);
-            if (Array.isArray(c.gpuSpeeds) && c.gpuSpeeds.length === 7)
-                root.curveGpuSpeeds = c.gpuSpeeds.map(Number);
+        if (data.advancedSupported !== undefined)
+            root.advancedSupported = data.advancedSupported === true;
+        if (data.curveWritable !== undefined)
+            root.curveWritable = data.curveWritable === true;
+        if (data.coolerBoostSupported !== undefined)
+            root.coolerBoostSupported = data.coolerBoostSupported === true;
+        if (data.superBatterySupported !== undefined)
+            root.superBatterySupported = data.superBatterySupported === true;
+        if (data.webcamSupported !== undefined)
+            root.webcamSupported = data.webcamSupported === true;
+        if (data.webcamBlockSupported !== undefined)
+            root.webcamBlockSupported = data.webcamBlockSupported === true;
+        if (data.fnKeySupported !== undefined)
+            root.fnKeySupported = data.fnKeySupported === true;
+        if (data.winKeySupported !== undefined)
+            root.winKeySupported = data.winKeySupported === true;
+        if (data.chargeSupported !== undefined)
+            root.chargeSupported = data.chargeSupported === true;
+        if (data.kbdBacklightSupported !== undefined)
+            root.kbdBacklightSupported = data.kbdBacklightSupported === true;
+
+        const curve = data.curve;
+        if (data.ok === true && curve && !root.curveDirty) {
+            if (root.validCurve(curve.cpuTemps, curve.cpuSpeeds)) {
+                root.curveCpuTemps = curve.cpuTemps.map(Number);
+                root.curveCpuSpeeds = curve.cpuSpeeds.map(Number);
+            }
+            if (root.validCurve(curve.gpuTemps, curve.gpuSpeeds)) {
+                root.curveGpuTemps = curve.gpuTemps.map(Number);
+                root.curveGpuSpeeds = curve.gpuSpeeds.map(Number);
+            }
         }
     }
 
     function sendCommand(command) {
         Quickshell.execDetached(["sh", "-c", 'printf "%s\\n" "$1" > "$2"', "sh", command, root.controlPath]);
+        pollSoon.restart();
+    }
+
+    function refreshNow() {
+        root.sendCommand("refresh");
+    }
+
+    function poll() {
+        if (!pollProcess.running)
+            pollProcess.running = true;
     }
 
     function setMode(kind, value) {
         if (!value)
             return;
+        if (kind === "fan_mode" && value === "advanced") {
+            if (root.curveReady) {
+                root.applyCurve();
+            } else {
+                root.sendCommand("set fan_mode advanced");
+                root.fanMode = "advanced";
+            }
+            return;
+        }
         if (kind === "shift_mode")
             root.shiftMode = value;
         else if (kind === "fan_mode")
@@ -228,66 +419,75 @@ PluginComponent {
 
     function setToggle(key, enabled) {
         const value = enabled ? "on" : "off";
-        if (key === "cooler_boost")
+        switch (key) {
+        case "cooler_boost":
             root.coolerBoost = value;
-        else if (key === "super_battery")
+            break;
+        case "super_battery":
             root.superBattery = value;
-        else if (key === "webcam")
+            break;
+        case "webcam":
             root.webcam = value;
-        else if (key === "webcam_block")
+            break;
+        case "webcam_block":
             root.webcamBlock = value;
+            break;
+        }
         root.sendCommand("set " + key + " " + value);
     }
 
     function setKeySwap(swapped) {
         const fn = swapped ? "right" : "left";
         const win = swapped ? "left" : "right";
+        if (root.fnKey === fn && root.winKey === win)
+            return;
         root.fnKey = fn;
         root.winKey = win;
-        root.sendCommand("set fn_key " + fn);
-        root.sendCommand("set win_key " + win);
+        root.sendCommand("set fn_key " + fn + "\nset win_key " + win);
     }
 
     function setKbdBacklight(value) {
+        if (!root.kbdBacklightSupported || value === root.kbdBacklight)
+            return;
         root.kbdBacklight = value;
         root.sendCommand("set kbd_backlight " + value);
     }
 
     function setCharge(key, value) {
+        if (!root.chargeSupported)
+            return;
+        let next = Math.max(0, Math.min(100, value));
         if (key === "charge_start") {
-            root.chargeStart = value;
-            if (root.chargeEnd <= value)
-                root.chargeEnd = Math.min(100, value + 5);
+            next = Math.max(0, Math.min(next, root.chargeEnd - 1));
+            root.chargeStart = next;
         } else {
-            root.chargeEnd = value;
-            if (root.chargeStart >= value)
-                root.chargeStart = Math.max(0, value - 5);
+            next = Math.min(100, Math.max(next, root.chargeStart + 1));
+            root.chargeEnd = next;
         }
-        root.sendCommand("set " + key + " " + value);
+        root.sendCommand("set " + key + " " + next);
     }
 
-    // --- fan curve ------------------------------------------------------------
     function curveCommand() {
         return "set fan_curve " + root.curveCpuTemps.join(",") + " " + root.curveCpuSpeeds.join(",") + " " + root.curveGpuTemps.join(",") + " " + root.curveGpuSpeeds.join(",");
     }
 
     function applyCurve() {
-        root.sendCommand(root.curveCommand());
-        root.sendCommand("set advanced on");
+        if (!root.curveReady)
+            return;
+        root.sendCommand(root.curveCommand() + "\nset advanced on");
         root.fanMode = "advanced";
         root.curveDirty = false;
     }
 
     function setAdvanced(enabled) {
         if (enabled) {
-            root.sendCommand(root.curveCommand());
-            root.sendCommand("set advanced on");
-            root.fanMode = "advanced";
-            root.curveDirty = false;
-        } else {
-            root.sendCommand("set advanced off");
-            root.fanMode = "auto";
+            root.applyCurve();
+            return;
         }
+        if (!root.advancedOn)
+            return;
+        root.sendCommand("set advanced off");
+        root.fanMode = "auto";
     }
 
     function setCurve(temps, speeds) {
@@ -302,21 +502,22 @@ PluginComponent {
     }
 
     function applyPreset(name) {
-        let t, s;
+        let temps;
+        let speeds;
         if (name === "silent") {
-            t = [60, 65, 70, 75, 80, 85];
-            s = [0, 25, 35, 45, 55, 65, 75];
+            temps = [60, 65, 70, 75, 80, 85];
+            speeds = [0, 25, 35, 45, 55, 65, 75];
         } else if (name === "performance") {
-            t = [45, 50, 55, 60, 65, 70];
-            s = [30, 45, 60, 75, 85, 95, 100];
+            temps = [45, 50, 55, 60, 65, 70];
+            speeds = [30, 45, 60, 75, 85, 95, 100];
         } else {
-            t = [50, 60, 65, 70, 75, 80];
-            s = [0, 40, 50, 60, 70, 80, 85];
+            temps = [50, 60, 65, 70, 75, 80];
+            speeds = [0, 40, 50, 60, 70, 80, 85];
         }
-        root.curveCpuTemps = t.slice();
-        root.curveCpuSpeeds = s.slice();
-        root.curveGpuTemps = t.slice();
-        root.curveGpuSpeeds = s.slice();
+        root.curveCpuTemps = temps.slice();
+        root.curveCpuSpeeds = speeds.slice();
+        root.curveGpuTemps = temps.slice();
+        root.curveGpuSpeeds = speeds.slice();
         root.curveDirty = true;
     }
 
@@ -331,13 +532,17 @@ PluginComponent {
     Timer {
         id: pollTimer
         interval: root.updateInterval
-        running: true
+        running: root.surfaceLive || root.interactionActive
         repeat: true
         triggeredOnStart: true
-        onTriggered: {
-            if (!pollProcess.running)
-                pollProcess.running = true;
-        }
+        onTriggered: root.poll()
+    }
+
+    Timer {
+        id: pollSoon
+        interval: 220
+        repeat: false
+        onTriggered: root.poll()
     }
 
     Process {
@@ -350,27 +555,26 @@ PluginComponent {
         }
     }
 
-    // left click opens the control menu, right click quick-toggles cooler boost
-    pillClickAction: null
-    pillRightClickAction: () => root.sendCommand("toggle cooler_boost")
+    pillRightClickAction: () => root.coolerBoostSupported ? root.setToggle("cooler_boost", !root.boostOn) : root.refreshNow()
 
     horizontalBarPill: Component {
         Row {
             spacing: Theme.spacingXS
             anchors.verticalCenter: parent ? parent.verticalCenter : undefined
 
-            DankIcon {
+            DIcon {
                 name: "mode_fan"
-                size: Theme.fontSizeSmall
-                color: root.statsAvailable ? root.statColor() : Theme.surfaceVariantText
+                visible: root.showPillIcon
+                size: root.iconSize
+                color: root.pillIconColor
                 anchors.verticalCenter: parent.verticalCenter
             }
 
             StyledText {
-                text: root.statsAvailable ? `${root.fanRpm}` : "--"
-                color: root.statsAvailable ? Theme.surfaceText : Theme.surfaceVariantText
-                font.pixelSize: Theme.fontSizeSmall
-                font.weight: Font.Medium
+                text: root.pillText
+                color: root.pillTextColor
+                font.pixelSize: root.textSize
+                font.weight: Theme.fontWeightMedium
                 anchors.verticalCenter: parent.verticalCenter
             }
         }
@@ -378,62 +582,55 @@ PluginComponent {
 
     verticalBarPill: Component {
         Column {
-            spacing: Theme.spacingXS
+            spacing: Theme.spacingXXS
             anchors.horizontalCenter: parent ? parent.horizontalCenter : undefined
 
-            DankIcon {
+            DIcon {
                 name: "mode_fan"
-                size: Theme.fontSizeSmall
-                color: root.statsAvailable ? root.statColor() : Theme.surfaceVariantText
+                visible: root.showPillIcon
+                size: root.iconSize
+                color: root.pillIconColor
                 anchors.horizontalCenter: parent.horizontalCenter
             }
 
             StyledText {
-                text: root.statsAvailable ? `${root.fanRpm}` : "--"
-                color: root.statsAvailable ? Theme.surfaceText : Theme.surfaceVariantText
-                font.pixelSize: Theme.fontSizeSmall
-                font.weight: Font.Medium
+                text: root.pillText
+                color: root.pillTextColor
+                font.pixelSize: root.textSize
+                font.weight: Theme.fontWeightMedium
                 anchors.horizontalCenter: parent.horizontalCenter
             }
         }
     }
 
-    popoutWidth: 400
-    popoutHeight: 0
+    popoutWidth: 420
 
     popoutContent: Component {
         PopoutComponent {
             id: menu
 
-            property var parentPopout: null
-
             width: parent ? parent.width : 0
-            headerText: "MSI EC Control"
-            detailsText: root.statsAvailable ? ((root.shiftMode || "MSI controller") + (root.fwVersion.length > 0 ? "  ·  " + root.fwVersion : "")) : (root.errorText || "Waiting for the fan daemon…")
-            showCloseButton: true
+            headerText: I18n.trFor("dankFanStats", "Fan Control")
+            detailsText: root.statsAvailable ? (root.shiftMode ? root.shiftMode + (root.fwVersion.length > 0 ? "  ·  " + root.fwVersion : "") : (root.fwVersion || I18n.trFor("dankFanStats", "MSI EC controller"))) : (root.errorText || I18n.trFor("dankFanStats", "Waiting for the fan daemon..."))
 
             headerActions: Component {
-                DankActionButton {
-                    iconName: "refresh"
-                    iconSize: Theme.iconSizeSmall
-                    iconColor: Theme.surfaceText
-                    buttonSize: Theme.iconSizeSmall + 8
-                    tooltipText: "Refresh"
-                    onClicked: root.sendCommand("refresh")
-                }
-            }
+                Row {
+                    spacing: Theme.spacingXS
 
-            // Sliders live in this component scope; keep them synced with the
-            // daemon (dragging assigns `value`, which breaks a plain binding).
-            Connections {
-                target: root
+                    DActionButton {
+                        visible: root.coolerBoostSupported
+                        iconName: "ac_unit"
+                        iconColor: root.boostOn ? Theme.primary : Theme.surfaceVariantText
+                        iconFilled: root.boostOn
+                        tooltipText: I18n.trFor("dankFanStats", "Toggle Cooler Boost")
+                        onClicked: root.setToggle("cooler_boost", !root.boostOn)
+                    }
 
-                function onChargeStartChanged() {
-                    chargeStartSlider.value = root.chargeStart;
-                }
-
-                function onChargeEndChanged() {
-                    chargeEndSlider.value = root.chargeEnd;
+                    DActionButton {
+                        iconName: "refresh"
+                        tooltipText: I18n.trFor("dankFanStats", "Refresh")
+                        onClicked: root.refreshNow()
+                    }
                 }
             }
 
@@ -441,83 +638,94 @@ PluginComponent {
                 width: parent.width
                 spacing: Theme.spacingM
 
-                // --- tabs -----------------------------------------------------
-                Item {
-                    width: parent.width
-                    height: tabBar.height + 14
+                DTabBar {
+                    id: tabBar
 
-                    DankTabBar {
-                        id: tabBar
-                        anchors.top: parent.top
-                        width: parent.width
-                        height: 44
-                        tabHeight: 44
-                        spacing: Theme.spacingXS
-                        currentIndex: root.tabIndex
-                        model: [
-                            {
-                                "text": "Stats",
-                                "icon": "thermostat"
-                            },
-                            {
-                                "text": "Settings",
-                                "icon": "tune"
-                            },
-                            {
-                                "text": "Curve",
-                                "icon": "show_chart"
-                            },
-                            {
-                                "text": "Keyboard",
-                                "icon": "keyboard"
-                            }
-                        ]
-                        onTabClicked: index => {
-                            root.tabIndex = index;
-                            if (index === 2)
-                                curveCanvas.requestPaint();
+                    width: parent.width
+                    tabHeight: 44
+                    currentIndex: root.tabIndex
+                    model: [
+                        {
+                            "text": I18n.trFor("dankFanStats", "Stats"),
+                            "icon": "thermostat"
+                        },
+                        {
+                            "text": I18n.trFor("dankFanStats", "Settings"),
+                            "icon": "tune"
+                        },
+                        {
+                            "text": I18n.trFor("dankFanStats", "Curve"),
+                            "icon": "show_chart"
+                        },
+                        {
+                            "text": I18n.trFor("dankFanStats", "Keyboard"),
+                            "icon": "keyboard"
                         }
+                    ]
+                    onTabClicked: index => {
+                        root.tabIndex = index;
+                        if (index === 2)
+                            curveCanvas.requestPaint();
                     }
                 }
 
-                // ================= STATS ======================================
                 Column {
                     width: parent.width
                     spacing: Theme.spacingM
                     visible: root.tabIndex === 0
 
-                    StyledRect {
+                    Row {
                         width: parent.width
-                        height: telemetryRow.implicitHeight + Theme.spacingM * 2
-                        radius: Theme.cornerRadius
-                        color: Theme.surfaceContainerHigh
+                        spacing: Theme.groupedListGap
 
-                        Row {
-                            id: telemetryRow
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.leftMargin: Theme.spacingM
-                            anchors.rightMargin: Theme.spacingM
-                            spacing: Theme.spacingM
+                        Repeater {
+                            model: root.telemetry
 
-                            Repeater {
-                                model: root.telemetry
+                            DCard {
+                                required property var modelData
+                                required property int index
 
-                                delegate: Column {
-                                    width: (telemetryRow.width - telemetryRow.spacing * 2) / 3
-                                    spacing: 2
+                                width: (parent.width - parent.spacing * Math.max(0, root.telemetry.length - 1)) / root.telemetry.length
+                                height: Math.max(112, telemetryCardColumn.implicitHeight + Theme.spacingM * 2)
 
-                                    StyledText {
-                                        text: modelData.label
-                                        color: Theme.surfaceVariantText
-                                        font.pixelSize: Theme.fontSizeSmall
+                                Column {
+                                    id: telemetryCardColumn
+
+                                    width: parent.width
+                                    spacing: Theme.spacingXS
+
+                                    Row {
+                                        spacing: Theme.spacingS
+
+                                        StyledRect {
+                                            width: 28
+                                            height: 28
+                                            radius: Theme.cornerRadiusS
+                                            color: Theme.withAlpha(modelData.accent, 0.14)
+
+                                            DIcon {
+                                                anchors.centerIn: parent
+                                                name: modelData.icon
+                                                size: Theme.iconSizeSmall
+                                                color: modelData.accent
+                                            }
+                                        }
+
+                                        StyledText {
+                                            text: modelData.label
+                                            color: Theme.surfaceVariantText
+                                            font.pixelSize: Theme.fontSizeSmall
+                                            font.weight: Theme.fontWeightMedium
+                                            anchors.verticalCenter: parent.verticalCenter
+                                        }
                                     }
 
                                     StyledText {
+                                        width: parent.width
                                         text: modelData.value
-                                        color: Theme.surfaceText
-                                        font.pixelSize: Theme.fontSizeLarge
+                                        color: modelData.valueColor
+                                        elide: Text.ElideRight
+                                        font.pixelSize: Theme.fontSizeXXLarge
                                         font.weight: Font.Bold
                                     }
 
@@ -525,571 +733,768 @@ PluginComponent {
                                         text: modelData.sub
                                         color: Theme.surfaceVariantText
                                         font.pixelSize: Theme.fontSizeSmall
+                                        elide: Text.ElideRight
+                                        width: parent.width
                                     }
                                 }
                             }
                         }
                     }
 
-                    Column {
+                    DCard {
                         width: parent.width
-                        spacing: Theme.spacingXS
+                        height: quickColumn.implicitHeight + Theme.spacingM * 2
+                        visible: root.coolerBoostSupported
 
-                        StyledText {
-                            text: "System"
-                            color: Theme.surfaceVariantText
-                            font.pixelSize: Theme.fontSizeSmall
-                            font.weight: Font.Medium
-                            bottomPadding: 2
-                        }
+                        Column {
+                            id: quickColumn
+                            width: parent.width
+                            spacing: Theme.spacingXXS
 
-                        Repeater {
-                            model: [
-                                {
-                                    "label": "Performance mode",
-                                    "value": root.shiftMode || "-"
-                                },
-                                {
-                                    "label": "Fan mode",
-                                    "value": root.fanMode || "-"
-                                },
-                                {
-                                    "label": "Firmware",
-                                    "value": root.fwVersion || "-"
-                                },
-                                {
-                                    "label": "Daemon",
-                                    "value": root.statsAvailable ? "online" : "offline"
-                                }
-                            ]
+                            SectionTitle {
+                                text: I18n.trFor("dankFanStats", "Quick control")
+                            }
 
-                            delegate: Row {
+                            DToggle {
                                 width: parent.width
-                                spacing: Theme.spacingM
+                                text: I18n.trFor("dankFanStats", "Cooler Boost")
+                                description: root.boostOn ? I18n.trFor("dankFanStats", "Fans at maximum speed") : I18n.trFor("dankFanStats", "Automatic fan curve")
+                                checked: root.boostOn
+                                onToggled: checked => root.setToggle("cooler_boost", checked)
+                            }
+                        }
+                    }
 
-                                StyledText {
-                                    width: parent.width - infoValue.implicitWidth - parent.spacing
-                                    text: modelData.label
-                                    elide: Text.ElideRight
-                                    color: Theme.surfaceVariantText
-                                    font.pixelSize: Theme.fontSizeSmall
-                                }
+                    DCard {
+                        width: parent.width
+                        height: systemColumn.implicitHeight + Theme.spacingM * 2
 
-                                StyledText {
-                                    id: infoValue
-                                    text: modelData.value
-                                    color: Theme.surfaceText
-                                    font.pixelSize: Theme.fontSizeSmall
-                                    font.weight: Font.Medium
-                                }
+                        Column {
+                            id: systemColumn
+                            width: parent.width
+                            spacing: Theme.spacingS
+
+                            SectionTitle {
+                                text: I18n.trFor("dankFanStats", "System")
+                            }
+
+                            InfoRow {
+                                label: I18n.trFor("dankFanStats", "Performance mode")
+                                value: root.shiftMode || "-"
+                            }
+
+                            Divider {}
+
+                            InfoRow {
+                                label: I18n.trFor("dankFanStats", "Fan mode")
+                                value: root.fanMode || "-"
+                            }
+
+                            Divider {}
+
+                            InfoRow {
+                                label: I18n.trFor("dankFanStats", "Firmware")
+                                value: root.fwVersion || "-"
+                            }
+
+                            Divider {}
+
+                            InfoRow {
+                                label: I18n.trFor("dankFanStats", "Daemon")
+                                value: root.statsAvailable ? I18n.trFor("dankFanStats", "Online") : I18n.trFor("dankFanStats", "Offline")
+                                valueColor: root.statsAvailable ? Theme.success : Theme.error
                             }
                         }
                     }
                 }
 
-                // ================= SETTINGS ===================================
                 Column {
                     width: parent.width
                     spacing: Theme.spacingM
                     visible: root.tabIndex === 1
 
-                    Column {
+                    DCard {
                         width: parent.width
-                        spacing: Theme.spacingS
-                        visible: root.shiftModes.length > 0
+                        height: performanceColumn.implicitHeight + Theme.spacingM * 2
+                        visible: root.shiftModes.length > 0 || root.fanModes.length > 0
 
-                        StyledText {
-                            text: "Performance mode"
-                            color: Theme.surfaceText
-                            font.pixelSize: Theme.fontSizeMedium
-                            font.weight: Font.Medium
-                        }
+                        Column {
+                            id: performanceColumn
+                            width: parent.width
+                            spacing: Theme.spacingS
 
-                        DankButtonGroup {
-                            size: "small"
-                            maximumWidth: parent.width
-                            model: root.shiftModes
-                            currentIndex: root.shiftModes.indexOf(root.shiftMode)
-                            onSelectionChanged: (index, selected) => {
-                                if (selected)
-                                    root.setMode("shift_mode", root.shiftModes[index]);
+                            SectionTitle {
+                                text: I18n.trFor("dankFanStats", "Performance")
                             }
-                        }
-                    }
 
-                    Column {
-                        width: parent.width
-                        spacing: Theme.spacingS
-                        visible: root.fanModes.length > 0
-
-                        StyledText {
-                            text: "Fan mode"
-                            color: Theme.surfaceText
-                            font.pixelSize: Theme.fontSizeMedium
-                            font.weight: Font.Medium
-                        }
-
-                        DankButtonGroup {
-                            size: "small"
-                            maximumWidth: parent.width
-                            model: root.fanModes
-                            currentIndex: root.fanModes.indexOf(root.fanMode)
-                            onSelectionChanged: (index, selected) => {
-                                if (selected)
-                                    root.setMode("fan_mode", root.fanModes[index]);
-                            }
-                        }
-                    }
-
-                    Grid {
-                        width: parent.width
-                        columns: 2
-                        rowSpacing: Theme.spacingS
-                        columnSpacing: Theme.spacingM
-
-                        Repeater {
-                            model: root.toggleItems
-
-                            delegate: Item {
-                                width: (parent.width - Theme.spacingM) / 2
-                                height: 34
+                            Column {
+                                width: parent.width
+                                spacing: Theme.spacingXS
+                                visible: root.shiftModes.length > 0
 
                                 StyledText {
-                                    anchors.left: parent.left
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: parent.width - 62
-                                    text: modelData.label
-                                    elide: Text.ElideRight
+                                    text: I18n.trFor("dankFanStats", "Performance mode")
                                     color: Theme.surfaceText
                                     font.pixelSize: Theme.fontSizeMedium
+                                    font.weight: Theme.fontWeightMedium
                                 }
 
-                                DankToggle {
-                                    hideText: true
-                                    anchors.right: parent.right
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    checked: root.toggleState(modelData.key)
-                                    onToggled: checked => root.setToggle(modelData.key, checked)
+                                DButtonGroup {
+                                    width: parent.width
+                                    fillWidth: true
+                                    size: "small"
+                                    checkEnabled: false
+                                    maximumWidth: parent.width
+                                    model: root.shiftModes
+                                    currentIndex: root.shiftModes.indexOf(root.shiftMode)
+                                    onSelectionChanged: (index, selected) => {
+                                        if (selected)
+                                            root.setMode("shift_mode", root.shiftModes[index]);
+                                    }
+                                }
+                            }
+
+                            Column {
+                                width: parent.width
+                                spacing: Theme.spacingXS
+                                visible: root.fanModes.length > 0
+
+                                StyledText {
+                                    text: I18n.trFor("dankFanStats", "Fan mode")
+                                    color: Theme.surfaceText
+                                    font.pixelSize: Theme.fontSizeMedium
+                                    font.weight: Theme.fontWeightMedium
+                                }
+
+                                DButtonGroup {
+                                    width: parent.width
+                                    fillWidth: true
+                                    size: "small"
+                                    checkEnabled: false
+                                    maximumWidth: parent.width
+                                    model: root.fanModes
+                                    currentIndex: root.fanModes.indexOf(root.fanMode)
+                                    onSelectionChanged: (index, selected) => {
+                                        if (selected)
+                                            root.setMode("fan_mode", root.fanModes[index]);
+                                    }
                                 }
                             }
                         }
                     }
 
-                    Column {
+                    DCard {
                         width: parent.width
-                        spacing: Theme.spacingXS
+                        height: featuresColumn.implicitHeight + Theme.spacingM * 2
+                        visible: root.toggleItems.length > 0
 
-                        Row {
+                        Column {
+                            id: featuresColumn
                             width: parent.width
-                            spacing: Theme.spacingM
+                            spacing: Theme.spacingXS
 
-                            StyledText {
-                                width: parent.width - chargeRange.implicitWidth - parent.spacing
-                                text: "Battery charge limit"
-                                elide: Text.ElideRight
-                                color: Theme.surfaceText
-                                font.pixelSize: Theme.fontSizeMedium
-                                font.weight: Font.Medium
+                            SectionTitle {
+                                text: I18n.trFor("dankFanStats", "Features")
+                            }
+
+                            Repeater {
+                                model: root.toggleItems
+
+                                Column {
+                                    required property var modelData
+                                    required property int index
+
+                                    width: parent.width
+                                    spacing: Theme.spacingXS
+
+                                    DToggle {
+                                        width: parent.width
+                                        text: modelData.label
+                                        description: modelData.description
+                                        checked: root.toggleState(modelData.key)
+                                        onToggled: checked => root.setToggle(modelData.key, checked)
+                                    }
+
+                                    Divider {
+                                        visible: index < root.toggleItems.length - 1
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    DCard {
+                        width: parent.width
+                        height: batteryColumn.implicitHeight + Theme.spacingM * 2
+                        visible: root.chargeSupported
+
+                        Column {
+                            id: batteryColumn
+                            width: parent.width
+                            spacing: Theme.spacingS
+
+                            Item {
+                                width: parent.width
+                                height: Math.max(chargeTitle.implicitHeight, chargeValue.implicitHeight)
+
+                                SectionTitle {
+                                    id: chargeTitle
+                                    anchors.left: parent.left
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: I18n.trFor("dankFanStats", "Battery care")
+                                }
+
+                                StyledText {
+                                    id: chargeValue
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: root.chargeStart + "% - " + root.chargeEnd + "%"
+                                    color: Theme.surfaceVariantText
+                                    font.pixelSize: Theme.fontSizeSmall
+                                }
+                            }
+
+                            DSlider {
+                                id: chargeStartSlider
+                                width: parent.width
+                                size: "s"
+                                minimum: 0
+                                maximum: 100
+                                step: 1
+                                unit: "%"
+                                startIcon: "battery_charging_full"
+                                onSliderDragFinished: finalValue => root.setCharge("charge_start", finalValue)
+
+                                Binding on value {
+                                    value: root.chargeStart
+                                    when: !chargeStartSlider.isDragging
+                                }
+                            }
+
+                            DSlider {
+                                id: chargeEndSlider
+                                width: parent.width
+                                size: "s"
+                                minimum: 0
+                                maximum: 100
+                                step: 1
+                                unit: "%"
+                                endIcon: "battery_full"
+                                onSliderDragFinished: finalValue => root.setCharge("charge_end", finalValue)
+
+                                Binding on value {
+                                    value: root.chargeEnd
+                                    when: !chargeEndSlider.isDragging
+                                }
                             }
 
                             StyledText {
-                                id: chargeRange
-                                text: root.chargeStart + "% - " + root.chargeEnd + "%"
+                                width: parent.width
+                                text: I18n.trFor("dankFanStats", "Charging starts below the first threshold and stops at the second.")
                                 color: Theme.surfaceVariantText
                                 font.pixelSize: Theme.fontSizeSmall
+                                wrapMode: Text.WordWrap
                             }
-                        }
-
-                        DankSlider {
-                            id: chargeStartSlider
-                            width: parent.width
-                            minimum: 0
-                            maximum: 100
-                            step: 5
-                            value: root.chargeStart
-                            leftIcon: "battery_charging_full"
-                            onSliderDragFinished: finalValue => root.setCharge("charge_start", finalValue)
-                        }
-
-                        DankSlider {
-                            id: chargeEndSlider
-                            width: parent.width
-                            minimum: 0
-                            maximum: 100
-                            step: 5
-                            value: root.chargeEnd
-                            rightIcon: "battery_full"
-                            onSliderDragFinished: finalValue => root.setCharge("charge_end", finalValue)
                         }
                     }
                 }
 
-                // ================= CURVE ======================================
                 Column {
                     width: parent.width
                     spacing: Theme.spacingM
                     visible: root.tabIndex === 2
 
-                    DankToggle {
+                    DCard {
                         width: parent.width
-                        text: "Advanced fan control"
-                        description: root.advancedOn ? "Active - the EC is following this curve" : "Off - the EC uses its automatic curve"
-                        checked: root.advancedOn
-                        onToggled: checked => root.setAdvanced(checked)
-                    }
+                        height: curveCardColumn.implicitHeight + Theme.spacingM * 2
 
-                    Item {
-                        id: graph
-                        width: parent.width
-                        height: 200
+                        Column {
+                            id: curveCardColumn
+                            width: parent.width
+                            spacing: Theme.spacingS
 
-                        readonly property real padLeft: 30
-                        readonly property real padRight: 10
-                        readonly property real padTop: 10
-                        readonly property real padBottom: 20
-                        readonly property real plotW: Math.max(1, width - padLeft - padRight)
-                        readonly property real plotH: Math.max(1, height - padTop - padBottom)
-                        readonly property real tempMin: 30
-                        readonly property real tempMax: 100
-                        readonly property real tempStep: 10
+                            Item {
+                                width: parent.width
+                                height: Math.max(curveTitle.implicitHeight, curveReadout.implicitHeight)
 
-                        function xFor(t) {
-                            return padLeft + (t - tempMin) / (tempMax - tempMin) * plotW;
-                        }
+                                SectionTitle {
+                                    id: curveTitle
+                                    anchors.left: parent.left
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: I18n.trFor("dankFanStats", "Fan curve")
+                                }
 
-                        function yFor(p) {
-                            return padTop + (1 - p / 100) * plotH;
-                        }
-
-                        function tempFor(x) {
-                            return tempMin + (x - padLeft) / plotW * (tempMax - tempMin);
-                        }
-
-                        function pctFor(y) {
-                            return (1 - (y - padTop) / plotH) * 100;
-                        }
-
-                        // handle 0 = level below the first threshold, 1..6 = level at threshold k
-                        function handlePos(temps, speeds, k) {
-                            return k === 0 ? Qt.point(xFor(tempMin), yFor(speeds[0])) : Qt.point(xFor(temps[k - 1]), yFor(speeds[k]));
-                        }
-
-                        function rgba(c, a) {
-                            return "rgba(" + Math.round(c.r * 255) + "," + Math.round(c.g * 255) + "," + Math.round(c.b * 255) + "," + a + ")";
-                        }
-
-                        function strokeCurve(ctx, temps, speeds, alpha, color, handles) {
-                            ctx.beginPath();
-                            ctx.moveTo(xFor(tempMin), yFor(speeds[0]));
-                            for (let k = 1; k <= 6; k++) {
-                                const xk = xFor(temps[k - 1]);
-                                ctx.lineTo(xk, yFor(speeds[k - 1]));
-                                ctx.lineTo(xk, yFor(speeds[k]));
+                                StyledText {
+                                    id: curveReadout
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: graph.focusHandle >= 0 ? graph.pointText(graph.focusHandle) : (root.curveDirty ? I18n.trFor("dankFanStats", "Unsaved changes") : (root.advancedOn ? I18n.trFor("dankFanStats", "Active") : I18n.trFor("dankFanStats", "Inactive")))
+                                    color: root.curveDirty ? Theme.warning : Theme.surfaceVariantText
+                                    font.pixelSize: Theme.fontSizeSmall
+                                }
                             }
-                            ctx.lineTo(xFor(tempMax), yFor(speeds[6]));
-                            ctx.lineWidth = 2;
-                            ctx.lineJoin = "round";
-                            ctx.strokeStyle = rgba(color, alpha);
-                            ctx.stroke();
 
-                            if (handles) {
-                                ctx.fillStyle = rgba(color, 1);
-                                for (let k = 0; k <= 6; k++) {
-                                    const pt = handlePos(temps, speeds, k);
+                            DToggle {
+                                width: parent.width
+                                text: I18n.trFor("dankFanStats", "Advanced fan control")
+                                description: !root.advancedSupported ? I18n.trFor("dankFanStats", "The driver does not expose an advanced fan mode") : (!root.curveWritable ? I18n.trFor("dankFanStats", "Raw EC writes are not enabled") : (root.advancedOn ? I18n.trFor("dankFanStats", "The EC is following this curve") : I18n.trFor("dankFanStats", "The EC uses its automatic curve")))
+                                checked: root.advancedOn
+                                enabled: root.curveReady || root.advancedOn
+                                onToggled: checked => root.setAdvanced(checked)
+                            }
+
+                            Item {
+                                id: graph
+
+                                readonly property real padLeft: 32
+                                readonly property real padRight: 10
+                                readonly property real padTop: 10
+                                readonly property real padBottom: 22
+                                readonly property real plotW: Math.max(1, width - padLeft - padRight)
+                                readonly property real plotH: Math.max(1, height - padTop - padBottom)
+                                readonly property real tempMin: 30
+                                readonly property real tempMax: 100
+                                readonly property real tempStep: 10
+
+                                property int activeHandle: -1
+                                property int hoverHandle: -1
+                                readonly property int focusHandle: activeHandle >= 0 ? activeHandle : hoverHandle
+
+                                width: parent.width
+                                height: 210
+                                opacity: root.curveReady ? 1 : 0.55
+
+                                function xFor(temp) {
+                                    return padLeft + (temp - tempMin) / (tempMax - tempMin) * plotW;
+                                }
+
+                                function yFor(percent) {
+                                    return padTop + (1 - percent / 100) * plotH;
+                                }
+
+                                function tempFor(x) {
+                                    return tempMin + (x - padLeft) / plotW * (tempMax - tempMin);
+                                }
+
+                                function percentFor(y) {
+                                    return (1 - (y - padTop) / plotH) * 100;
+                                }
+
+                                function handlePos(temps, speeds, index) {
+                                    return index === 0 ? Qt.point(xFor(tempMin), yFor(speeds[0])) : Qt.point(xFor(temps[index - 1]), yFor(speeds[index]));
+                                }
+
+                                function rgba(color, alpha) {
+                                    return "rgba(" + Math.round(color.r * 255) + "," + Math.round(color.g * 255) + "," + Math.round(color.b * 255) + "," + alpha + ")";
+                                }
+
+                                function pointText(index) {
+                                    const temp = index > 0 ? root.curveTemps[index - 1] : tempMin;
+                                    return temp + "°C  " + root.curveSpeeds[index] + "%";
+                                }
+
+                                function tracePath(ctx, temps, speeds) {
+                                    ctx.moveTo(xFor(tempMin), yFor(speeds[0]));
+                                    for (let index = 1; index <= 6; index++) {
+                                        const x = xFor(temps[index - 1]);
+                                        ctx.lineTo(x, yFor(speeds[index - 1]));
+                                        ctx.lineTo(x, yFor(speeds[index]));
+                                    }
+                                    ctx.lineTo(xFor(tempMax), yFor(speeds[6]));
+                                }
+
+                                function fillCurve(ctx, temps, speeds, color, alpha) {
+                                    const gradient = ctx.createLinearGradient(0, padTop, 0, padTop + plotH);
+                                    gradient.addColorStop(0, rgba(color, alpha));
+                                    gradient.addColorStop(1, rgba(color, 0.02));
                                     ctx.beginPath();
-                                    ctx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
+                                    tracePath(ctx, temps, speeds);
+                                    ctx.lineTo(xFor(tempMax), padTop + plotH);
+                                    ctx.lineTo(xFor(tempMin), padTop + plotH);
+                                    ctx.closePath();
+                                    ctx.fillStyle = gradient;
                                     ctx.fill();
                                 }
-                            }
-                        }
 
-                        function paintCanvas(ctx) {
-                            ctx.clearRect(0, 0, curveCanvas.width, curveCanvas.height);
+                                function strokeCurve(ctx, temps, speeds, alpha, color, handles, lineWidth) {
+                                    ctx.beginPath();
+                                    tracePath(ctx, temps, speeds);
+                                    ctx.lineWidth = lineWidth;
+                                    ctx.lineJoin = "round";
+                                    ctx.strokeStyle = rgba(color, alpha);
+                                    ctx.stroke();
 
-                            ctx.lineWidth = 1;
-                            ctx.strokeStyle = rgba(Theme.outline, 0.35);
-                            for (let t = tempMin + tempStep; t <= tempMax; t += tempStep) {
-                                const x = xFor(t);
-                                ctx.beginPath();
-                                ctx.moveTo(x, padTop);
-                                ctx.lineTo(x, padTop + plotH);
-                                ctx.stroke();
-                            }
-                            for (let p = 0; p <= 100; p += 20) {
-                                const y = yFor(p);
-                                ctx.beginPath();
-                                ctx.moveTo(padLeft, y);
-                                ctx.lineTo(padLeft + plotW, y);
-                                ctx.stroke();
-                            }
+                                    if (!handles)
+                                        return;
 
-                            ctx.fillStyle = rgba(Theme.surfaceVariantText, 1);
-                            ctx.font = "10px sans-serif";
-                            ctx.textAlign = "right";
-                            ctx.textBaseline = "middle";
-                            for (let p = 0; p <= 100; p += 20)
-                                ctx.fillText(p + "%", padLeft - 4, yFor(p));
-                            ctx.textAlign = "center";
-                            ctx.textBaseline = "top";
-                            for (let t = tempMin + tempStep; t <= tempMax; t += tempStep)
-                                ctx.fillText(t + "°", xFor(t), padTop + plotH + 3);
+                                    ctx.fillStyle = rgba(color, 1);
+                                    for (let index = 0; index <= 6; index++) {
+                                        const point = handlePos(temps, speeds, index);
+                                        ctx.beginPath();
+                                        ctx.arc(point.x, point.y, 4.5, 0, Math.PI * 2);
+                                        ctx.fill();
+                                    }
 
-                            const cpuActive = root.curveTarget === 0;
-                            strokeCurve(ctx, root.curveGpuTemps, root.curveGpuSpeeds, cpuActive ? 0.3 : 1, Theme.tertiary, !cpuActive);
-                            strokeCurve(ctx, root.curveCpuTemps, root.curveCpuSpeeds, cpuActive ? 1 : 0.3, Theme.primary, cpuActive);
-                        }
+                                    if (focusHandle < 0)
+                                        return;
 
-                        function clampSpeed(speeds, k, pct) {
-                            const lo = k > 0 ? speeds[k - 1] : 0;
-                            const hi = k < 6 ? speeds[k + 1] : 100;
-                            return Math.max(lo, Math.min(hi, pct));
-                        }
+                                    const focus = handlePos(temps, speeds, focusHandle);
+                                    ctx.beginPath();
+                                    ctx.arc(focus.x, focus.y, 8, 0, Math.PI * 2);
+                                    ctx.lineWidth = 1.5;
+                                    ctx.strokeStyle = rgba(color, 0.55);
+                                    ctx.stroke();
+                                }
 
-                        function dragHandle(k, mx, my) {
-                            let pct = Math.round(pctFor(my) / 5) * 5;
-                            pct = Math.max(0, Math.min(100, pct));
+                                function paintCanvas(ctx) {
+                                    ctx.clearRect(0, 0, curveCanvas.width, curveCanvas.height);
 
-                            const temps = root.curveTemps.slice();
-                            const speeds = root.curveSpeeds.slice();
+                                    ctx.lineWidth = 1;
+                                    ctx.strokeStyle = rgba(Theme.outline, 0.28);
+                                    for (let temp = tempMin + tempStep; temp <= tempMax; temp += tempStep) {
+                                        const x = xFor(temp);
+                                        ctx.beginPath();
+                                        ctx.moveTo(x, padTop);
+                                        ctx.lineTo(x, padTop + plotH);
+                                        ctx.stroke();
+                                    }
+                                    for (let percent = 0; percent <= 100; percent += 20) {
+                                        const y = yFor(percent);
+                                        ctx.beginPath();
+                                        ctx.moveTo(padLeft, y);
+                                        ctx.lineTo(padLeft + plotW, y);
+                                        ctx.stroke();
+                                    }
 
-                            if (k >= 1) {
-                                let t = Math.round(tempFor(mx));
-                                t = Math.max(tempMin + 1, Math.min(tempMax, t));
-                                if (k >= 2)
-                                    t = Math.max(t, temps[k - 2] + 1);
-                                if (k <= 5)
-                                    t = Math.min(t, temps[k] - 1);
-                                temps[k - 1] = t;
-                            }
-                            speeds[k] = clampSpeed(speeds, k, pct);
-                            root.setCurve(temps, speeds);
-                        }
+                                    ctx.fillStyle = rgba(Theme.surfaceVariantText, 1);
+                                    ctx.font = "10px sans-serif";
+                                    ctx.textAlign = "right";
+                                    ctx.textBaseline = "middle";
+                                    for (let percent = 0; percent <= 100; percent += 20)
+                                        ctx.fillText(percent + "%", padLeft - 5, yFor(percent));
 
-                        Connections {
-                            target: root
+                                    ctx.textAlign = "center";
+                                    ctx.textBaseline = "top";
+                                    for (let temp = tempMin + tempStep; temp <= tempMax; temp += tempStep)
+                                        ctx.fillText(temp + "°", xFor(temp), padTop + plotH + 4);
 
-                            function onCurveCpuTempsChanged() {
-                                curveCanvas.requestPaint();
-                            }
+                                    const cpuActive = root.curveTarget === 0;
+                                    if (cpuActive)
+                                        fillCurve(ctx, root.curveCpuTemps, root.curveCpuSpeeds, Theme.primary, 0.2);
+                                    else
+                                        fillCurve(ctx, root.curveGpuTemps, root.curveGpuSpeeds, Theme.tertiary, 0.2);
 
-                            function onCurveCpuSpeedsChanged() {
-                                curveCanvas.requestPaint();
-                            }
+                                    strokeCurve(ctx, root.curveGpuTemps, root.curveGpuSpeeds, cpuActive ? 0.3 : 1, Theme.tertiary, !cpuActive, cpuActive ? 1.5 : 2.5);
+                                    strokeCurve(ctx, root.curveCpuTemps, root.curveCpuSpeeds, cpuActive ? 1 : 0.3, Theme.primary, cpuActive, cpuActive ? 2.5 : 1.5);
+                                }
 
-                            function onCurveGpuTempsChanged() {
-                                curveCanvas.requestPaint();
-                            }
+                                function clampSpeed(speeds, index, percent) {
+                                    const low = index > 0 ? speeds[index - 1] : 0;
+                                    const high = index < 6 ? speeds[index + 1] : 100;
+                                    return Math.max(low, Math.min(high, percent));
+                                }
 
-                            function onCurveGpuSpeedsChanged() {
-                                curveCanvas.requestPaint();
-                            }
+                                function dragHandle(index, mouseX, mouseY) {
+                                    let percent = Math.round(percentFor(mouseY) / 5) * 5;
+                                    percent = Math.max(0, Math.min(100, percent));
 
-                            function onCurveTargetChanged() {
-                                curveCanvas.requestPaint();
-                            }
-                        }
+                                    const temps = root.curveTemps.slice();
+                                    const speeds = root.curveSpeeds.slice();
 
-                        Canvas {
-                            id: curveCanvas
-                            anchors.fill: parent
-                            onWidthChanged: requestPaint()
-                            onHeightChanged: requestPaint()
-                            onPaint: graph.paintCanvas(getContext("2d"))
-                        }
+                                    if (index >= 1) {
+                                        let temp = Math.round(tempFor(mouseX));
+                                        temp = Math.max(tempMin + 1, Math.min(tempMax, temp));
+                                        if (index >= 2)
+                                            temp = Math.max(temp, temps[index - 2] + 1);
+                                        if (index <= 5)
+                                            temp = Math.min(temp, temps[index] - 1);
+                                        temps[index - 1] = temp;
+                                    }
 
-                        MouseArea {
-                            id: curveDrag
-                            anchors.fill: parent
-                            property int activeHandle: -1
+                                    speeds[index] = clampSpeed(speeds, index, percent);
+                                    activeHandle = index;
+                                    hoverHandle = -1;
+                                    root.setCurve(temps, speeds);
+                                    curveCanvas.requestPaint();
+                                }
 
-                            function nearest(mx, my) {
-                                const temps = root.curveTemps;
-                                const speeds = root.curveSpeeds;
-                                let best = -1;
-                                let bestDist = 26 * 26;
-                                for (let k = 0; k <= 6; k++) {
-                                    const p = graph.handlePos(temps, speeds, k);
-                                    const dx = p.x - mx;
-                                    const dy = p.y - my;
-                                    const d = dx * dx + dy * dy;
-                                    if (d < bestDist) {
-                                        bestDist = d;
-                                        best = k;
+                                function nearest(mouseX, mouseY) {
+                                    let best = -1;
+                                    let bestDistance = 28 * 28;
+                                    for (let index = 0; index <= 6; index++) {
+                                        const point = handlePos(root.curveTemps, root.curveSpeeds, index);
+                                        const dx = point.x - mouseX;
+                                        const dy = point.y - mouseY;
+                                        const distance = dx * dx + dy * dy;
+                                        if (distance < bestDistance) {
+                                            bestDistance = distance;
+                                            best = index;
+                                        }
+                                    }
+                                    return best;
+                                }
+
+                                Connections {
+                                    target: root
+
+                                    function onCurveCpuTempsChanged() {
+                                        curveCanvas.requestPaint();
+                                    }
+
+                                    function onCurveCpuSpeedsChanged() {
+                                        curveCanvas.requestPaint();
+                                    }
+
+                                    function onCurveGpuTempsChanged() {
+                                        curveCanvas.requestPaint();
+                                    }
+
+                                    function onCurveGpuSpeedsChanged() {
+                                        curveCanvas.requestPaint();
+                                    }
+
+                                    function onCurveTargetChanged() {
+                                        curveCanvas.requestPaint();
                                     }
                                 }
-                                return best;
-                            }
 
-                            onPressed: mouse => {
-                                curveDrag.activeHandle = curveDrag.nearest(mouse.x, mouse.y);
-                                if (curveDrag.activeHandle >= 0)
-                                    graph.dragHandle(curveDrag.activeHandle, mouse.x, mouse.y);
-                            }
-                            onPositionChanged: mouse => {
-                                if (pressed && curveDrag.activeHandle >= 0)
-                                    graph.dragHandle(curveDrag.activeHandle, mouse.x, mouse.y);
-                            }
-                            onReleased: curveDrag.activeHandle = -1
-                        }
-                    }
+                                Canvas {
+                                    id: curveCanvas
 
-                    Column {
-                        width: parent.width
-                        spacing: Theme.spacingXS
-
-                        StyledText {
-                            text: "Curve target"
-                            color: Theme.surfaceVariantText
-                            font.pixelSize: Theme.fontSizeSmall
-                            font.weight: Font.Medium
-                        }
-
-                        Row {
-                            width: parent.width
-                            spacing: Theme.spacingS
-
-                            Chip {
-                                label: "CPU"
-                                selected: root.curveTarget === 0
-                                onActivated: {
-                                    root.curveTarget = 0;
-                                    curveCanvas.requestPaint();
+                                    anchors.fill: parent
+                                    renderStrategy: Canvas.Cooperative
+                                    onWidthChanged: requestPaint()
+                                    onHeightChanged: requestPaint()
+                                    onPaint: graph.paintCanvas(getContext("2d"))
                                 }
-                            }
 
-                            Chip {
-                                label: "GPU"
-                                selected: root.curveTarget === 1
-                                onActivated: {
-                                    root.curveTarget = 1;
-                                    curveCanvas.requestPaint();
+                                MouseArea {
+                                    id: curveDrag
+
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    acceptedButtons: Qt.LeftButton
+                                    cursorShape: graph.hoverHandle >= 0 || graph.activeHandle >= 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                    enabled: root.curveReady
+
+                                    onPressed: mouse => {
+                                        graph.activeHandle = graph.nearest(mouse.x, mouse.y);
+                                        if (graph.activeHandle >= 0)
+                                            graph.dragHandle(graph.activeHandle, mouse.x, mouse.y);
+                                    }
+                                    onPositionChanged: mouse => {
+                                        if (pressed && graph.activeHandle >= 0) {
+                                            graph.dragHandle(graph.activeHandle, mouse.x, mouse.y);
+                                            return;
+                                        }
+                                        graph.hoverHandle = graph.nearest(mouse.x, mouse.y);
+                                    }
+                                    onReleased: graph.activeHandle = -1
+                                    onCanceled: graph.activeHandle = -1
+                                    onExited: graph.hoverHandle = -1
                                 }
                             }
                         }
                     }
 
-                    Column {
+                    DCard {
                         width: parent.width
-                        spacing: Theme.spacingXS
+                        height: curveControlsColumn.implicitHeight + Theme.spacingM * 2
 
-                        StyledText {
-                            text: "Presets"
-                            color: Theme.surfaceVariantText
-                            font.pixelSize: Theme.fontSizeSmall
-                            font.weight: Font.Medium
-                        }
-
-                        Row {
+                        Column {
+                            id: curveControlsColumn
                             width: parent.width
                             spacing: Theme.spacingS
 
-                            Chip {
-                                label: "Silent"
-                                onActivated: root.applyPreset("silent")
+                            SectionTitle {
+                                text: I18n.trFor("dankFanStats", "Curve target")
                             }
 
-                            Chip {
-                                label: "Balanced"
-                                onActivated: root.applyPreset("balanced")
+                            DButtonGroup {
+                                width: parent.width
+                                fillWidth: true
+                                size: "small"
+                                checkEnabled: false
+                                maximumWidth: parent.width
+                                model: [
+                                    {
+                                        "text": I18n.trFor("dankFanStats", "CPU"),
+                                        "icon": "memory"
+                                    },
+                                    {
+                                        "text": I18n.trFor("dankFanStats", "GPU"),
+                                        "icon": "developer_board"
+                                    }
+                                ]
+                                currentIndex: root.curveTarget
+                                onSelectionChanged: (index, selected) => {
+                                    if (selected) {
+                                        root.curveTarget = index;
+                                        curveCanvas.requestPaint();
+                                    }
+                                }
                             }
 
-                            Chip {
-                                label: "Performance"
-                                onActivated: root.applyPreset("performance")
+                            SectionTitle {
+                                text: I18n.trFor("dankFanStats", "Presets")
+                            }
+
+                            Row {
+                                width: parent.width
+                                spacing: Theme.spacingS
+
+                                Repeater {
+                                    model: [
+                                        {
+                                            "label": I18n.trFor("dankFanStats", "Silent"),
+                                            "name": "silent"
+                                        },
+                                        {
+                                            "label": I18n.trFor("dankFanStats", "Balanced"),
+                                            "name": "balanced"
+                                        },
+                                        {
+                                            "label": I18n.trFor("dankFanStats", "Performance"),
+                                            "name": "performance"
+                                        }
+                                    ]
+
+                                    DButton {
+                                        required property var modelData
+
+                                        width: (parent.width - parent.spacing * 2) / 3
+                                        buttonHeight: Theme.buttonHeightXS
+                                        text: modelData.label
+                                        backgroundColor: Theme.secondaryContainer
+                                        textColor: Theme.onSecondaryContainer
+                                        enabled: root.curveReady
+                                        onClicked: root.applyPreset(modelData.name)
+                                    }
+                                }
                             }
                         }
                     }
 
-                    Item {
+                    Row {
                         width: parent.width
-                        height: 32
+                        spacing: Theme.spacingS
 
-                        Chip {
-                            anchors.left: parent.left
-                            anchors.verticalCenter: parent.verticalCenter
-                            label: "Reset to factory"
-                            onActivated: root.resetCurve()
+                        DButton {
+                            width: (parent.width - parent.spacing) / 2
+                            text: I18n.trFor("dankFanStats", "Reset")
+                            iconName: "restart_alt"
+                            backgroundColor: Theme.secondaryContainer
+                            textColor: Theme.onSecondaryContainer
+                            enabled: root.curveReady
+                            onClicked: root.resetCurve()
                         }
 
-                        Chip {
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            label: "Apply curve"
-                            selected: true
-                            onActivated: root.applyCurve()
+                        DButton {
+                            width: (parent.width - parent.spacing) / 2
+                            text: I18n.trFor("dankFanStats", "Apply curve")
+                            iconName: "check"
+                            enabled: root.curveReady && (root.curveDirty || !root.advancedOn)
+                            onClicked: root.applyCurve()
                         }
                     }
                 }
 
-                // ================= KEYBOARD ===================================
                 Column {
                     width: parent.width
                     spacing: Theme.spacingM
                     visible: root.tabIndex === 3
 
-                    Column {
+                    DCard {
                         width: parent.width
-                        spacing: Theme.spacingS
-                        visible: root.kbdLabels.length > 0
+                        height: keyboardColumn.implicitHeight + Theme.spacingM * 2
+                        visible: root.kbdBacklightSupported && root.kbdLabels.length > 0
 
-                        StyledText {
-                            text: "Keyboard backlight"
-                            color: Theme.surfaceText
-                            font.pixelSize: Theme.fontSizeMedium
-                            font.weight: Font.Medium
-                        }
+                        Column {
+                            id: keyboardColumn
+                            width: parent.width
+                            spacing: Theme.spacingS
 
-                        DankButtonGroup {
-                            size: "small"
-                            maximumWidth: parent.width
-                            model: root.kbdLabels
-                            currentIndex: root.kbdBacklight
-                            onSelectionChanged: (index, selected) => {
-                                if (selected)
-                                    root.setKbdBacklight(index);
+                            SectionTitle {
+                                text: I18n.trFor("dankFanStats", "Keyboard backlight")
+                            }
+
+                            DButtonGroup {
+                                width: parent.width
+                                fillWidth: true
+                                size: "small"
+                                checkEnabled: false
+                                maximumWidth: parent.width
+                                model: root.kbdLabels
+                                currentIndex: root.kbdBacklight
+                                onSelectionChanged: (index, selected) => {
+                                    if (selected)
+                                        root.setKbdBacklight(index);
+                                }
                             }
                         }
                     }
 
-                    Column {
+                    DCard {
                         width: parent.width
-                        spacing: Theme.spacingS
+                        height: functionColumn.implicitHeight + Theme.spacingM * 2
+                        visible: root.functionKeysSupported
 
-                        StyledText {
-                            text: "Fn / Windows key position"
-                            color: Theme.surfaceText
-                            font.pixelSize: Theme.fontSizeMedium
-                            font.weight: Font.Medium
-                        }
-
-                        Row {
+                        Column {
+                            id: functionColumn
                             width: parent.width
                             spacing: Theme.spacingS
 
-                            Chip {
-                                width: (parent.width - parent.spacing) / 2
-                                label: "Fn left / Win right"
-                                selected: root.fnKey !== "right"
-                                onActivated: root.setKeySwap(false)
+                            SectionTitle {
+                                text: I18n.trFor("dankFanStats", "Function keys")
                             }
 
-                            Chip {
-                                width: (parent.width - parent.spacing) / 2
-                                label: "Fn right / Win left"
-                                selected: root.fnKey === "right"
-                                onActivated: root.setKeySwap(true)
+                            DButtonGroup {
+                                width: parent.width
+                                fillWidth: true
+                                size: "small"
+                                checkEnabled: false
+                                maximumWidth: parent.width
+                                model: [
+                                    I18n.trFor("dankFanStats", "Fn left"),
+                                    I18n.trFor("dankFanStats", "Fn right")
+                                ]
+                                currentIndex: root.fnKey === "right" ? 1 : 0
+                                onSelectionChanged: (index, selected) => {
+                                    if (selected)
+                                        root.setKeySwap(index === 1);
+                                }
+                            }
+
+                            StyledText {
+                                width: parent.width
+                                text: I18n.trFor("dankFanStats", "The Windows key takes the opposite side.")
+                                color: Theme.surfaceVariantText
+                                font.pixelSize: Theme.fontSizeSmall
+                                wrapMode: Text.WordWrap
                             }
                         }
                     }
                 }
 
-                StyledText {
+                StyledRect {
                     width: parent.width
+                    height: errorText.implicitHeight + Theme.spacingM * 2
+                    radius: Theme.cornerRadiusM
+                    color: Theme.errorContainer
                     visible: root.errorText.length > 0
-                    text: root.errorText
-                    color: Theme.error
-                    font.pixelSize: Theme.fontSizeSmall
-                    wrapMode: Text.WordWrap
+
+                    StyledText {
+                        id: errorText
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: Theme.spacingM
+                        anchors.rightMargin: Theme.spacingM
+                        text: root.errorText
+                        color: Theme.onErrorContainer
+                        font.pixelSize: Theme.fontSizeSmall
+                        wrapMode: Text.WordWrap
+                    }
                 }
             }
         }

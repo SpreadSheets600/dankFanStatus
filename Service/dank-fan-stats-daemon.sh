@@ -13,14 +13,9 @@ CLIENT_GROUP="${CLIENT_GROUP:-$(id -gn "$CLIENT_USER" 2>/dev/null || echo root)}
 EC_DIR="/sys/devices/platform/msi-ec"
 EC_DEBUG_IO="/sys/kernel/debug/ec/ec0/io"
 
-# The MSI EC forgets everything on power loss, so the daemon keeps a copy of the
-# settings it has applied and replays them once at startup.
 STATE_DIR="/var/lib/dank-fan-stats"
 STATE_FILE="$STATE_DIR/settings.conf"
 
-# MSI "advanced" fan curve lives in raw EC memory (no sysfs interface), the same
-# layout MControlCenter uses. Reading works with ec_sys read-only; writing needs
-# ec_sys write_support=1 (see /etc/modprobe.d/ec_sys.conf).
 CURVE_CPU_TEMP=0x6A
 CURVE_CPU_TEMP_N=6
 CURVE_CPU_SPEED=0x72
@@ -112,6 +107,14 @@ valid_choice() {
 	[[ -r "$path" ]] && grep -qxF -- "$value" "$path"
 }
 
+writable_json() {
+	if [[ -w "$1" ]]; then printf 'true'; else printf 'false'; fi
+}
+
+advanced_supported() {
+	if valid_choice advanced "$EC_DIR/available_fan_modes"; then printf 'true'; else printf 'false'; fi
+}
+
 read_ec_byte() {
 	local addr=$1
 	dd if="$EC_DEBUG_IO" bs=1 count=1 skip=$((addr)) 2>/dev/null | od -An -tx1 | tr -d ' '
@@ -149,8 +152,6 @@ write_ec_byte() {
 		dd of="$EC_DEBUG_IO" bs=1 seek=$((addr)) count=1 conv=notrunc 2>/dev/null
 }
 
-# Validate a comma separated list: count, 0..100 range, ordered (temps strictly
-# ascending, speeds non-decreasing). Returns non-zero on any violation.
 valid_curve_list() {
 	local csv=$1 count=$2 mode=$3 i v prev=-1
 	local -a vals
@@ -189,8 +190,6 @@ write_ec_range() {
 	done
 }
 
-# Apply a full CPU+GPU curve. Speeds are written before temperatures so the EC
-# never sees a hard temperature with a stale low speed.
 apply_fan_curve() {
 	local cpu_temps=$1 cpu_speeds=$2 gpu_temps=$3 gpu_speeds=$4
 
@@ -246,9 +245,6 @@ fan_rpm() {
 	fi
 }
 
-# MSI exposes the keyboard backlight as a standard LED class device
-# (msiacpi::kbd_backlight), 0..max_brightness = off/low/med/high.
-
 KBD_LED=""
 
 for _led in /sys/class/leds/*kbd_backlight/brightness; do
@@ -285,15 +281,22 @@ set_bool_attr() {
 }
 
 set_charge() {
-	local key=$1 value=$2
+	local key=$1 value=$2 start end
 
 	[[ "$value" =~ ^[0-9]+$ ]] || return 0
 	((value >= 0 && value <= 100)) || return 0
 	[[ -n "$BAT_DIR" ]] || return 0
 
+	start=$(num_attr "$BAT_DIR/charge_control_start_threshold" 0)
+	end=$(num_attr "$BAT_DIR/charge_control_end_threshold" 100)
+
 	if [[ "$key" == "charge_start" ]]; then
+		((value < end)) || value=$((end - 1))
+		((value >= 0)) || return 0
 		printf '%s\n' "$value" >"$BAT_DIR/charge_control_start_threshold" 2>/dev/null || true
 	else
+		((value > start)) || value=$((start + 1))
+		((value <= 100)) || return 0
 		printf '%s\n' "$value" >"$BAT_DIR/charge_control_end_threshold" 2>/dev/null || true
 	fi
 }
@@ -307,11 +310,6 @@ set_kbd_backlight() {
 
 	printf '%s\n' "$value" >"$KBD_LED" 2>/dev/null || true
 }
-
-# --- persisted settings -------------------------------------------------------
-# Every write below doubles as a "remember this" call. The stored value is read
-# back from the kernel rather than taken from the request, so toggles resolve to
-# their final on/off state and the driver's canonical spelling is what survives.
 
 save_setting() {
 	local key=$1
@@ -379,8 +377,6 @@ apply_saved_settings() {
 
 	[[ -r "$STATE_FILE" ]] || return 0
 
-	# Curves first: selecting the "advanced" fan mode is only useful once the
-	# table it reads has been restored.
 	while IFS='=' read -r key value; do
 		[[ "$key" == "fan_curve" ]] || continue
 		apply_setting "$key" "$value" || true
@@ -392,7 +388,6 @@ apply_saved_settings() {
 	done <"$STATE_FILE"
 }
 
-# --- json output --------------------------------------------------------------
 write_json() {
 	local error ok
 	error=$(json_escape "${1:-}")
@@ -400,7 +395,6 @@ write_json() {
 	if [[ -n "$error" ]]; then ok=false; else ok=true; fi
 
 	cat >"$TMP_PATH" <<EOF
-
 {
   "ok": $ok,
   "error": "$error",
@@ -429,7 +423,17 @@ write_json() {
   "chargeStart": $(num_attr "$BAT_DIR/charge_control_start_threshold" 0),
   "chargeEnd": $(num_attr "$BAT_DIR/charge_control_end_threshold" 100),
   "kbdBacklight": $(num_attr "${KBD_LED:-/nonexistent}" 0),
-  "kbdBacklightMax": $KBD_MAX
+  "kbdBacklightMax": $KBD_MAX,
+  "advancedSupported": $(advanced_supported),
+  "curveWritable": $(writable_json "$EC_DEBUG_IO"),
+  "coolerBoostSupported": $(writable_json "$EC_DIR/cooler_boost"),
+  "superBatterySupported": $(writable_json "$EC_DIR/super_battery"),
+  "webcamSupported": $(writable_json "$EC_DIR/webcam"),
+  "webcamBlockSupported": $(writable_json "$EC_DIR/webcam_block"),
+  "fnKeySupported": $(writable_json "$EC_DIR/fn_key"),
+  "winKeySupported": $(writable_json "$EC_DIR/win_key"),
+  "chargeSupported": $(writable_json "$BAT_DIR/charge_control_start_threshold"),
+  "kbdBacklightSupported": $(writable_json "$KBD_LED")
 }
 EOF
 
@@ -445,7 +449,6 @@ refresh_stats() {
 	write_json ""
 }
 
-# --- command handling ---------------------------------------------------------
 handle_command() {
 	local line=$1
 	local -a parts
@@ -458,7 +461,6 @@ handle_command() {
 	case "${action,,}" in
 	refresh | "") ;;
 	toggle)
-		# legacy "toggle" -> cooler boost
 		case "${key,,}" in
 		"" | cooler_boost)
 			set_bool_attr "$EC_DIR/cooler_boost" toggle
@@ -521,8 +523,9 @@ handle_command() {
 			esac
 			;;
 		charge_start | charge_end)
-			set_charge "${key,,}" "$value"
-			persist_attr "${key,,}" "$BAT_DIR/charge_control_${key#charge_}_threshold"
+			local charge_key=${key,,}
+			set_charge "$charge_key" "$value"
+			persist_attr "$charge_key" "$BAT_DIR/charge_control_${charge_key#charge_}_threshold"
 			;;
 		kbd_backlight | backlight | keyboard_backlight)
 			set_kbd_backlight "$value"
@@ -535,8 +538,6 @@ handle_command() {
 	refresh_stats
 }
 
-# Re-apply what the user had configured before the last power-off, then start
-# serving fresh values.
 apply_saved_settings
 refresh_stats
 

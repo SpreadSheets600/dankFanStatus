@@ -14,17 +14,12 @@ sed -e "s/@CLIENT_USER@/${TARGET_USER}/g" \
 	"$BASE_DIR/dank-fan-stats.service" >/etc/systemd/system/dank-fan-stats.service
 chmod 0644 /etc/systemd/system/dank-fan-stats.service
 
-# Read-only EC access (/sys/kernel/debug/ec/ec0/io) for real fan RPM.
 install -D -m 0644 "$BASE_DIR/ec_sys.conf" /etc/modules-load.d/ec_sys.conf
 
-# Enable EC writes so the advanced fan curve can be set (raw EC table, the same
-# method MControlCenter uses). The debugfs node stays root-only.
 install -D -m 0644 "$BASE_DIR/ec_sys-write.conf" /etc/modprobe.d/ec_sys.conf
 
-# Persisted settings (replayed by the daemon at every start).
 install -d -m 0755 /var/lib/dank-fan-stats
 
-# (Re)load ec_sys with the new parameters.
 modprobe -r ec_sys 2>/dev/null || true
 modprobe ec_sys 2>/dev/null || true
 

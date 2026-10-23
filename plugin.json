@@ -1,13 +1,14 @@
 {
   "id": "dankFanStats",
   "name": "Dank Fan Stats",
-  "description": "Fan RPM and temperature plus full MSI EC control in a tabbed menu: Stats, Settings, a draggable advanced fan-curve editor, and Keyboard (backlight + Fn/Win swap).",
-  "version": "0.4.1",
+  "description": "Fan RPM and temperatures in the bar, with a tabbed MSI EC control panel for performance modes, battery care, the advanced fan curve and the keyboard backlight.",
+  "version": "1.0.0",
   "author": "SpreadSheets600",
   "icon": "mode_fan",
   "type": "widget",
   "capabilities": ["dankbar-widget", "monitoring"],
   "component": "./DankFanStats.qml",
   "settings": "./DankFanStatsSettings.qml",
+  "requires_dms": ">=2.0.0",
   "permissions": ["settings_read", "settings_write", "process"]
 }
